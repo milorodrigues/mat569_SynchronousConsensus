@@ -1,0 +1,1 @@
+python main.py --port 15001 --cluster 15001 15002 --failures 2
