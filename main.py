@@ -1,108 +1,54 @@
 import argparse
-import socket
-import time
+import numpy as np
+from multiprocessing import shared_memory
 
 class Parameters:
-    def __init__(self, port, cluster, failures):
+    def __init__(self, id, cluster, type):
         self.host = '127.0.0.1'
-        self.port = port
+        
+        self.id = int(id)
+        self.type = int(type)
+        self.port = int(id + type)
 
-        cluster.sort(reverse=True)
-        self.cluster = cluster
+        self.cluster = [int(member + '2') for member in cluster]
+        self.cluster.sort(reverse=True)
 
-        self.failures = failures
-        self.rounds = self.failures + 1
         self.proposal = 42
 
-class Process:
-    def __init__(self):
+        self.memoryKey = 'memory' + id
+
+        print(f"{self.port} {self.cluster} {self.memoryKey}")
+
+        if self.type == 1: # Client process
+            print(f"Entering if")
+            a = np.array([(1, 2), (3, 4)], dtype="i,i")
+            print(a.dtype)
+
+            self.memory = shared_memory.SharedMemory(create=True, name=self.memoryKey, size=a.nbytes)
+
+            b = np.ndarray(a.shape, dtype=a.dtype, buffer=self.memory.buf)
+            b[:] = a[:]
+
+            while True:
+                x = 1+1
+                continue
+        
+        elif self.type == 2: # Server process
+            self.memory = shared_memory.SharedMemory(name=self.memoryKey)
+            c = np.ndarray((2,), dtype="i,i", buffer=self.memory.buf)
+            print(c)
+
+class Process():
+    def __init__(self) -> None:
         # Reading input flags
         argParser = argparse.ArgumentParser()
-        argParser.add_argument("--port", help="Port for first process to listen to, also process identifier", required=True)
+        argParser.add_argument("--id", help="Process identifier", required=True)
+        argParser.add_argument("--type", help="Process role (1 for server, 2 for client)", required=True)
         argParser.add_argument("--cluster", help="Numbers of all processes", required=True, nargs='+')
-        argParser.add_argument("--failures", help="Amount of failures to tolerate", required=True)
         args = argParser.parse_args()
 
-        self.parameters = Parameters(port=int(args.port), cluster=[int(member) for member in args.cluster], failures=int(args.failures))
+        self.parameters = Parameters(id=args.id, cluster=[member for member in args.cluster], type=args.type)
 
-        self.values = []
-        self.values.append(set())
-        self.values.append(set())
-        self.values[1].add(self.parameters.proposal)
-
-        for r in range(1,self.parameters.rounds):
-            self.round(r)
-
-        consensus = min(self.values[-1])
-        print(f">>>> Consensus reached: {consensus}")
-
-    def round(self, r):
-        print(f"##### Round {r} #####")
-
-        newSet = set()
-        newSet.update(self.values[r])
-        self.values.append(newSet)
-
-        for turn in self.parameters.cluster:
-            print(f"## {turn}'s turn ##")
-            if turn == self.parameters.port:
-                self.actSender(r)
-            else:
-                self.actReceiver(r)
-    
-    def actSender(self, r):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.bind((self.parameters.host, self.parameters.port))
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.socket.settimeout(5)
-
-        setToSend = self.values[r].difference(self.values[r-1])
-
-        for member in self.parameters.cluster:
-            if member != self.parameters.port:
-                data = f"{self.parameters.port},{self.setToString(setToSend)}"
-                print(f"Sending {data} to {member}...", end='')
-                for attempt in range(1,4):
-                    try:
-                        self.socket.connect((self.parameters.host, member))
-                        self.socket.send(data.encode())
-                        data = self.socket.recv(1024)
-                        if data:
-                            print(f"sent")
-                            break
-                    except socket.timeout as e:
-                        print("\nTimed out, trying again...")
-
-        self.socket.close()
-    
-    def actReceiver(self, r):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.bind((self.parameters.host, self.parameters.port))
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        if r > 1:
-            self.socket.settimeout(5)
-
-        print(f"Listening on port {self.parameters.port}...")
-        self.socket.listen()
-
-        try:
-            while True:
-                conn, addr = self.socket.accept()
-                with conn:
-                    data = conn.recv(1024)
-                    values = data.decode().split(',')[1:]
-                    self.values[r+1].update(set(map(int, values)))
-                    print(f"Received {values} from {addr[1]}")
-                    conn.send("Received".encode())
-                    conn.close()
-                    print("Stopping listening...")
-                    break
-        except socket.timeout as e:
-            print("\nTimed out, stopping listening")
-        
-        self.socket.close()
-
-    def setToString(self, input):
-        return ','.join(set(map(str, input)))
+        return
 
 p = Process()
