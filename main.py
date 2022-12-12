@@ -1,16 +1,12 @@
 import argparse
-import numpy as np
-from multiprocessing import shared_memory
 import socket
 import time
 
 class Parameters:
-    def __init__(self, id, cluster, type):
+    def __init__(self, id, cluster, failures):
         self.host = '127.0.0.1'
         
         self.id = int(id)
-        self.type = int(type)
-        self.port = int(id + type)
 
         self.cluster = [int(member) for member in cluster]
         self.cluster.sort(reverse=True)
@@ -18,79 +14,120 @@ class Parameters:
 
         self.proposal = 42
 
-        self.memoryKey = 'memory' + id
-
-        print(f"Parameters:\nid = {self.id} port = {self.port} cluster = {self.cluster} memoryKey = {self.memoryKey}")
+        self.failures = int(failures)
+        self.rounds = self.failures + 1
 
 class Process():
     def __init__(self) -> None:
         # Reading input flags
         argParser = argparse.ArgumentParser()
         argParser.add_argument("--id", help="Process identifier", required=True)
-        argParser.add_argument("--type", help="Process role (1 for server, 2 for client)", required=True)
-        argParser.add_argument("--cluster", help="Numbers of all processes", required=True, nargs='+')
+        argParser.add_argument("--cluster", help="Identifiers of all processes", required=True, nargs='+')
+        argParser.add_argument("--failures", help="Amount of failures to tolerate", required=True)
         args = argParser.parse_args()
 
-        self.parameters = Parameters(id=args.id, cluster=[member for member in args.cluster], type=args.type)
+        self.parameters = Parameters(id=args.id, cluster=[member for member in args.cluster], failures=args.failures)
 
-        if self.parameters.type == 1:
-            l = [(member, -1) for member in self.parameters.cluster]
-            #l[self.cluster.index(self.id)] = (self.id, self.proposal)
-            a = np.array(l, dtype="i,i")
+        self.firstInLine = False
+        self.currentRound = 0
+        if max(self.parameters.cluster) == self.parameters.id:
+            self.firstInLine = True
+        self.lastConnection = -1
 
-            self.memory = shared_memory.SharedMemory(create=True, name=self.parameters.memoryKey, size=a.nbytes)
+        self.values = {}
+        self.values[0] = set()
+        self.values[1] = set()
+        self.values[1].add(self.parameters.proposal)
 
-            self.data = np.ndarray(a.shape, dtype=a.dtype, buffer=self.memory.buf)
-            self.data[:] = a[:]
+        self.socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
+        self.socket.settimeout(2)
+        self.socket.bind((self.parameters.host, self.parameters.id))
 
-            self.actClient()
-        elif self.parameters.type == 2:
-            self.memory = shared_memory.SharedMemory(name=self.parameters.memoryKey)
-            self.data = np.ndarray((len(self.parameters.cluster),), dtype="i,i", buffer=self.memory.buf)
+        if self.firstInLine:
+            self.actSender()
+        else:
+            self.actListener()
 
-            print(self.data)
+    def actListener(self):
+        print(f"Listening on port {self.parameters.id}...")
 
-            self.actServer()
-
-        return
-
-    def actServer(self):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.bind((self.parameters.host, self.parameters.port))
-
-        data = str(self.parameters.proposal)
-        port = int(str(self.parameters.id) + '1')
-
-        print(f"Sending {data} to {port}...")
-        self.socket.connect((self.parameters.host, port))
-        self.socket.send(data.encode())
-        data = self.socket.recv(1024)
-        print(f"Response received: {data.decode()}")
-
-        self.socket.close()
-
-        print(f"Waiting...")
-        time.sleep(5)
-        print(f"self.data = {self.data}")
-        return
-    
-    def actClient(self):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.bind((self.parameters.host, self.parameters.port))
-        print(f"Listening on port {self.parameters.port}...")
-        self.socket.listen()
+        """if self.parameters.id == 10002:
+            print(f"Simulating crash...")
+            self.socket.shutdown(2)
+            self.socket.close()
+            return"""
 
         while True:
-            conn, addr = self.socket.accept()
-            with conn:
-                data = conn.recv(1024)
-                print(f"Received {data.decode()} from {addr[1]}")
-                conn.send("Received".encode())
-                conn.close()
+            try:
+                pair = self.socket.recvfrom(1024)
+                data = list(map(int, pair[0].decode().split(',')))
+                self.lastConnection = pair[1][1]
 
-                i = self.parameters.cluster.index(int(addr[1]/10))
-                self.data[i] = (int(addr[1]/10), int(data.decode()))
-                print(f"self.data = {self.data}")
-        return
+                print(f"Received {data} from {self.lastConnection}")
+
+                if data[0] > self.currentRound:
+                    self.currentRound = data[0]
+                    self.values.setdefault(self.currentRound, set())
+                    self.values.setdefault(self.currentRound + 1, self.values[self.currentRound])
+                self.values[self.currentRound + 1].update(set(data[1:]))
+                
+                iSender = self.parameters.cluster.index(self.lastConnection)
+                iSelf = self.parameters.cluster.index(self.parameters.id)
+
+                if iSender + 1 == iSelf or (iSelf == 0 and iSender + 1 == len(self.parameters.cluster)):
+                    time.sleep(1)
+                    self.actSender()
+                
+                print(self.values)
+            except socket.timeout:
+                if self.lastConnection == -1: continue
+                else:
+                    print(f"Timed out, assuming crash")
+
+                    if (self.lastConnection in self.parameters.cluster):
+                        iSender = self.parameters.cluster.index(self.lastConnection)
+                        iSelf = self.parameters.cluster.index(self.parameters.id)
+                        self.parameters.cluster.remove(self.lastConnection)
+
+                        if iSender + 1 == iSelf or (iSelf == 0 and iSender + 1 == len(self.parameters.cluster)):
+                            self.firstInLine = True
+                            self.actSender()
+                    
+                    elif max(self.parameters.cluster) == self.parameters.id:
+                        self.firstInLine = True
+                        self.actSender()
+
+                    else:
+                        self.parameters.cluster.remove(max(self.parameters.cluster))
+            except ConnectionResetError:
+                pass
+            
+    def actSender(self):
+        if self.firstInLine:
+            self.currentRound += 1
+
+        if self.currentRound <= self.parameters.rounds:
+            print(f"### Starting round {self.currentRound}")
+
+            setToSend = self.values[self.currentRound].difference(self.values[self.currentRound-1])
+            data = f"{str(self.currentRound)}"
+            if len(setToSend) > 0:
+                data = data + f",{self.setToString(setToSend)}"
+
+            for member in self.parameters.cluster:
+                if member != self.parameters.id:
+                    print(f"Sending {data} to {member}...")
+                    self.socket.sendto(data.encode(), (self.parameters.host, member))
+
+            self.values.setdefault(self.currentRound, set())
+            self.values.setdefault(self.currentRound + 1, self.values[self.currentRound])
+            self.actListener()       
+        else:
+            consensus = max(self.values[max(self.values)])
+            print(f"Consensus reached: {consensus}")
+            quit()
+
+    def setToString(self, input):
+        return ','.join(set(map(str, input)))
 
 p = Process()

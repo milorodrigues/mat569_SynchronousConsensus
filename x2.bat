@@ -1,0 +1,1 @@
+python main.py --id 10002 --cluster 10001 10002 10003 --failures 2
