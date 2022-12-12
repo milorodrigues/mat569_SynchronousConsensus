@@ -51,9 +51,15 @@ class Process():
     def actListener(self):
         print(f"Listening on port {self.parameters.id}...")
 
-        """if self.parameters.id == 10002:
+        # Uncomment to simulate crashes
+        """if self.parameters.id == 10003:
             print(f"Simulating crash...")
-            self.socket.shutdown(2)
+            #self.socket.shutdown(2)
+            self.socket.close()
+            return
+        elif self.parameters.id == 10001 and self.currentRound == 2:
+            print(f"Simulating crash...")
+            #self.socket.shutdown(2)
             self.socket.close()
             return"""
 
@@ -85,11 +91,13 @@ class Process():
                     print(f"Timed out, assuming crash")
 
                     if (self.lastConnection in self.parameters.cluster):
-                        iSender = self.parameters.cluster.index(self.lastConnection)
+                        iExpected = (self.parameters.cluster.index(self.lastConnection) + 1) % len(self.parameters.cluster)
                         iSelf = self.parameters.cluster.index(self.parameters.id)
-                        self.parameters.cluster.remove(self.lastConnection)
 
-                        if iSender + 1 == iSelf or (iSelf == 0 and iSender + 1 == len(self.parameters.cluster)):
+                        if iExpected != iSelf:
+                            self.parameters.cluster.remove(self.parameters.cluster[iExpected])
+                            
+                        if iExpected == iSelf or iExpected + 1 == iSelf or (iSelf == 0 and iExpected + 1 == len(self.parameters.cluster)):
                             self.firstInLine = True
                             self.actSender()
                     
